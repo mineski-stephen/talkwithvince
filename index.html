@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TALK WITH VINCE</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background-color: #1e1e1e;
+      color: #ffffff;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    h1 {
+      font-size: 3em;
+      margin: 10px 0;
+    }
+    #vince {
+      height: 20%;
+    }
+    .container {
+      display: flex;
+      width: 100%;
+      max-width: 1400px;
+      margin-top: 30px;
+      flex-grow: 1;
+    }
+    .column {
+      flex: 1;
+      padding: 40px;
+      background-color: #2c2c2c;
+      margin: 15px;
+      border-radius: 15px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      display: flex;
+      flex-direction: column;
+    }
+    .column h2 {
+      margin-top: 0;
+      font-size: 3em;
+      text-align: center;
+    }
+    ul {
+      list-style-type: none;
+      padding: 0;
+      overflow-y: auto;
+      flex-grow: 1;
+      margin: 0;
+    }
+    li {
+      padding: 20px;
+      margin-bottom: 12px;
+      background-color: #444;
+      border-radius: 10px;
+      font-size: 2em;
+    }
+    li.empty {
+      background: transparent;
+      color: #888;
+      font-style: italic;
+      text-align: center;
+    }
+    /* gentle one-time flash when someone is newly called */
+    li.just-called {
+      animation: flash 1.6s ease-out;
+    }
+    @keyframes flash {
+      0%   { background-color: #4CAF50; }
+      100% { background-color: #444; }
+    }
+
+    /* "Reconnecting" banner */
+    #banner {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: #b3261e;
+      color: #fff;
+      text-align: center;
+      padding: 8px;
+      font-size: 1.1em;
+      z-index: 50;
+    }
+    #banner[hidden] { display: none; }
+
+    /* one-time "tap to enable sound" overlay (browsers block audio until a gesture) */
+    #soundOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5em;
+      cursor: pointer;
+      z-index: 100;
+      text-align: center;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="banner" hidden></div>
+
+  <img id="vince" src="vince.png" alt="Vince"></img>
+  <h1>TALK WITH VINCE</h1>
+
+  <div class="container">
+    <div class="column">
+      <h2>IN QUEUE</h2>
+      <ul id="queueList"></ul>
+    </div>
+    <div class="column">
+      <h2>NOW SERVING</h2>
+      <ul id="nowServingList"></ul>
+    </div>
+  </div>
+
+  <audio id="bellSound" src="bell.mp3" preload="auto"></audio>
+
+  <div id="soundOverlay">🔔 Tap anywhere to enable sound</div>
+
+  <script src="config.js"></script>
+  <script src="supabase.js"></script>
+  <script>
+    const queueList = document.getElementById("queueList");
+    const nowServingList = document.getElementById("nowServingList");
+    const bellSound = document.getElementById("bellSound");
+    const banner = document.getElementById("banner");
+    const soundOverlay = document.getElementById("soundOverlay");
+
+    let knownServing = new Set();   // ids currently shown in NOW SERVING
+    let primed = false;             // skip the bell on the very first load
+    let lastSig = null;             // skip re-render when nothing changed (no flicker)
+
+    function setBanner(msg) {
+      if (!msg) { banner.hidden = true; }
+      else { banner.textContent = msg; banner.hidden = false; }
+    }
+
+    function render(ul, rows, isServing, newIds) {
+      ul.innerHTML = "";
+      if (rows.length === 0) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = isServing ? "No one being served" : "No one in queue";
+        ul.appendChild(li);
+        return;
+      }
+      for (const r of rows) {
+        const li = document.createElement("li");
+        li.textContent = r.name;
+        if (isServing && newIds.has(r.id)) li.classList.add("just-called");
+        ul.appendChild(li);
+      }
+    }
+
+    async function tick() {
+      try {
+        const rows = await fetchRows();
+        setBanner(null);
+
+        // skip work if the data is identical to last poll (prevents flicker/scroll reset)
+        const sig = rows.map(r => `${r.id}:${r.serving}:${r.name}`).join("|");
+        if (sig === lastSig) return;
+        lastSig = sig;
+
+        const queue = rows.filter(r => !r.serving);   // serving=false -> in queue
+        const serving = rows.filter(r => r.serving);   // serving=true  -> now serving
+
+        // which serving rows are newly called? (drives bell + flash)
+        const nowIds = new Set(serving.map(r => r.id));
+        const newIds = new Set();
+        if (primed) {
+          for (const id of nowIds) if (!knownServing.has(id)) newIds.add(id);
+        }
+        primed = true;
+        knownServing = nowIds;
+
+        render(queueList, queue, false, newIds);
+        render(nowServingList, serving, true, newIds);
+
+        if (newIds.size > 0) {
+          bellSound.currentTime = 0;
+          bellSound.play().catch(() => {});  // guarded: may be blocked until user gesture
+        }
+      } catch (e) {
+        setBanner("⚠ Reconnecting…");        // keep the last good render on screen
+      }
+    }
+
+    // Unlock audio on first user interaction (autoplay policy).
+    soundOverlay.addEventListener("click", () => {
+      bellSound.play().then(() => {
+        bellSound.pause();
+        bellSound.currentTime = 0;
+      }).catch(() => {});
+      soundOverlay.style.display = "none";
+    });
+
+    setInterval(tick, POLL_INTERVAL_MS);
+    tick();
+  </script>
+</body>
+</html>
