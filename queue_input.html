@@ -56,9 +56,30 @@
       margin-bottom: 8px;
       background-color: #2c2c2c;
       border-radius: 10px;
+      transition: transform 0.15s ease;
     }
     li .name { flex: 1; font-size: 1.2em; word-break: break-word; }
     li.empty { background: transparent; color: #888; font-style: italic; justify-content: center; }
+
+    /* Drag-to-reorder (queue list only) */
+    .drag-handle {
+      cursor: grab;
+      touch-action: none;        /* the handle drags; it never scrolls the page */
+      user-select: none;
+      -webkit-user-select: none;
+      color: #888;
+      font-size: 1.3em;
+      padding: 8px 6px 8px 0;
+    }
+    li.drag-placeholder { opacity: 0.35; }
+    li.drag-clone {
+      position: fixed;
+      margin: 0;
+      z-index: 1000;
+      pointer-events: none;
+      transition: none;          /* must track the cursor instantly */
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
+    }
 
     #status {
       min-height: 1.2em;
@@ -89,6 +110,8 @@
 
   <button class="btn-clear" id="clearBtn">Clear all served</button>
 
+  <audio id="bellSound" src="bell.mp3" preload="auto"></audio>
+
   <script src="config.js"></script>
   <script src="supabase.js"></script>
   <script>
@@ -100,9 +123,13 @@
     const queueCount = document.getElementById("queueCount");
     const servingCount = document.getElementById("servingCount");
     const statusEl = document.getElementById("status");
+    const bellSound = document.getElementById("bellSound");
 
     let writing = false;     // a write is in flight — pause polling, ignore extra clicks
+    let dragging = false;    // a card is being dragged — pause polling, ignore other drags
     let lastSig = null;       // skip re-render when nothing changed
+    let knownServing = new Set();  // ids currently in NOW SERVING (drives the bell)
+    let bellPrimed = false;        // skip the bell on the very first load
     const RECONNECTING = "⚠ Reconnecting…";
 
     function setStatus(msg) { statusEl.textContent = msg || ""; }
@@ -138,6 +165,84 @@
       return b;
     }
 
+    // Drag a queue card to a new position. A fixed-position clone follows the
+    // pointer; the real card stays in the DOM (dimmed) and neighbours slide
+    // aside with CSS transforms. Keeping the DOM untouched during the drag
+    // means pointer capture is never lost mid-drag (moving the captured
+    // element would release it, which breaks touch dragging).
+    function startDrag(e, li, rows, index) {
+      if (dragging || writing || rows.length < 2) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      dragging = true;
+
+      const handle = e.currentTarget;
+      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+
+      const items = [...queueList.children];
+      const rect = li.getBoundingClientRect();
+      const grabX = e.clientX - rect.left;
+      const grabY = e.clientY - rect.top;
+      const step = rect.height + 8;   // row height + the 8px row gap
+      // Row midpoints in their resting positions — drop targets are computed
+      // against these, not the transformed positions, so the math stays stable.
+      const mids = items.map(el => {
+        const r = el.getBoundingClientRect();
+        return r.top + r.height / 2;
+      });
+
+      const clone = li.cloneNode(true);
+      clone.classList.add("drag-clone");
+      clone.style.width = rect.width + "px";
+      clone.style.left = rect.left + "px";
+      clone.style.top = rect.top + "px";
+      document.body.appendChild(clone);
+      li.classList.add("drag-placeholder");
+      document.body.style.cursor = "grabbing";
+
+      let to = index;
+
+      const onMove = (ev) => {
+        if (ev.pointerId !== e.pointerId) return;
+        clone.style.left = (ev.clientX - grabX) + "px";
+        clone.style.top = (ev.clientY - grabY) + "px";
+        let shiftedDown = 0, shiftedUp = 0;
+        items.forEach((el, k) => {
+          if (k === index) return;
+          if (k < index && ev.clientY < mids[k]) {
+            el.style.transform = `translateY(${step}px)`;
+            shiftedDown++;
+          } else if (k > index && ev.clientY > mids[k]) {
+            el.style.transform = `translateY(${-step}px)`;
+            shiftedUp++;
+          } else {
+            el.style.transform = "";
+          }
+        });
+        to = index - shiftedDown + shiftedUp;
+      };
+
+      const finish = (commit) => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onCancel);
+        items.forEach(el => { el.style.transform = ""; });
+        clone.remove();
+        li.classList.remove("drag-placeholder");
+        document.body.style.cursor = "";
+        dragging = false;
+        if (commit && to !== index) {
+          doWrite(() => reorderNames(rows, index, to));
+        }
+      };
+      const onUp = (ev) => { if (ev.pointerId === e.pointerId) finish(true); };
+      const onCancel = (ev) => { if (ev.pointerId === e.pointerId) finish(false); };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
+    }
+
     function renderList(ul, rows, kind) {
       ul.innerHTML = "";
       if (rows.length === 0) {
@@ -147,8 +252,18 @@
         ul.appendChild(li);
         return;
       }
-      for (const r of rows) {
+      rows.forEach((r, i) => {
         const li = document.createElement("li");
+
+        if (kind === "queue") {
+          const handle = document.createElement("span");
+          handle.className = "drag-handle";
+          handle.textContent = "⠿";
+          handle.title = "Drag to reorder";
+          handle.addEventListener("pointerdown", (e) => startDrag(e, li, rows, i));
+          li.appendChild(handle);
+        }
+
         const name = document.createElement("span");
         name.className = "name";
         name.textContent = r.name;
@@ -162,7 +277,7 @@
           li.appendChild(makeButton("Done ✓", "btn-done", () => doWrite(() => removeRow(r.id))));
         }
         ul.appendChild(li);
-      }
+      });
     }
 
     // Fetch + render. force=true bypasses the unchanged-data short-circuit.
@@ -173,6 +288,22 @@
       lastSig = sig;
       const queue = rows.filter(r => !r.serving);   // serving=false -> in queue
       const serving = rows.filter(r => r.serving);   // serving=true  -> now serving
+
+      // Ring when someone newly enters NOW SERVING — whether called from this
+      // device or another one. Same logic as the display page.
+      const nowIds = new Set(serving.map(r => r.id));
+      if (bellPrimed) {
+        for (const id of nowIds) {
+          if (!knownServing.has(id)) {
+            bellSound.currentTime = 0;
+            bellSound.play().catch(() => {});  // blocked until the first tap on the page
+            break;
+          }
+        }
+      }
+      bellPrimed = true;
+      knownServing = nowIds;
+
       queueCount.textContent = queue.length ? `(${queue.length})` : "";
       servingCount.textContent = serving.length ? `(${serving.length})` : "";
       renderList(queueList, queue, "queue");
@@ -185,6 +316,16 @@
       doWrite(async () => { await addCustomer(name); nameInput.value = ""; nameInput.focus(); });
     }
 
+    // Browsers block audio until the user interacts with the page. The
+    // operator always taps something (input, Call, a drag handle), so unlock
+    // on the first tap — no "tap to enable sound" overlay needed here.
+    document.addEventListener("pointerdown", () => {
+      bellSound.play().then(() => {
+        bellSound.pause();
+        bellSound.currentTime = 0;
+      }).catch(() => {});
+    }, { once: true });
+
     addBtn.addEventListener("click", addFromInput);
     nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addFromInput(); });
 
@@ -196,7 +337,7 @@
 
     // Background poll so two operators stay in sync. Skip while a write is in flight.
     async function poll() {
-      if (writing) return;
+      if (writing || dragging) return;
       try {
         await refresh(false);
         // only clear our own transient banner — never clobber a write-error message
