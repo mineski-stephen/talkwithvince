@@ -20,11 +20,15 @@
       box-sizing: border-box;
     }
     h1 {
-      font-size: 3em;
+      font-size: clamp(1.6em, 6vw, 3em);
       margin: 10px 0;
+      text-align: center;
     }
     #vince {
       height: 20%;
+      max-height: 220px;
+      max-width: 90vw;
+      object-fit: contain;
     }
     .container {
       display: flex;
@@ -35,7 +39,7 @@
     }
     .column {
       flex: 1;
-      padding: 40px;
+      padding: clamp(16px, 3vw, 40px);
       background-color: #2c2c2c;
       margin: 15px;
       border-radius: 15px;
@@ -45,7 +49,7 @@
     }
     .column h2 {
       margin-top: 0;
-      font-size: 3em;
+      font-size: clamp(1.4em, 4.5vw, 3em);
       text-align: center;
     }
     ul {
@@ -56,11 +60,37 @@
       margin: 0;
     }
     li {
-      padding: 20px;
+      padding: clamp(12px, 2vw, 20px);
       margin-bottom: 12px;
       background-color: #444;
       border-radius: 10px;
-      font-size: 2em;
+      font-size: clamp(1.2em, 3.5vw, 2em);
+      word-break: break-word;
+    }
+
+    /* Mobile: stack the columns and let the whole page scroll naturally */
+    @media (max-width: 700px) {
+      html, body {
+        height: auto;
+        min-height: 100%;
+      }
+      body {
+        padding: 12px;
+      }
+      #vince {
+        max-height: 120px;
+      }
+      .container {
+        flex-direction: column;
+        margin-top: 12px;
+      }
+      .column {
+        margin: 8px 0;
+        min-height: 140px;
+      }
+      ul {
+        overflow-y: visible;
+      }
     }
     li.empty {
       background: transparent;
@@ -101,7 +131,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 2.5em;
+      font-size: clamp(1.4em, 5vw, 2.5em);
       cursor: pointer;
       z-index: 100;
       text-align: center;
